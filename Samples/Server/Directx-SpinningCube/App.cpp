@@ -38,6 +38,7 @@ CubeRenderer*		g_cubeRenderer = nullptr;
 VideoTestRunner*	g_videoTestRunner = nullptr;
 #else // TEST_RUNNER
 VideoHelper*		g_videoHelper = nullptr;
+bool				g_service = false;
 #endif // TESTRUNNER
 
 //--------------------------------------------------------------------------------------
@@ -138,17 +139,16 @@ void InputUpdate(const std::string& message)
 //--------------------------------------------------------------------------------------
 // WebRTC
 //--------------------------------------------------------------------------------------
-int InitWebRTC(char* server, int port)
+int InitWebRTC(char* server, int port, bool service)
 {
 	rtc::EnsureWinsockInit();
 	rtc::Win32Thread w32_thread;
 	rtc::ThreadManager::Instance()->SetCurrentThread(&w32_thread);
 
-#ifdef NO_UI
-	DefaultMainWindow wnd(server, port, true, true, true);
-#else // NO_UI
-	DefaultMainWindow wnd(server, port, FLAG_autoconnect, FLAG_autocall, false, 1280, 720);
-#endif // NO_UI
+	bool autoConnect = service ? true : FLAG_autoconnect;
+	bool autoCall = service ? true : FLAG_autocall;
+	bool noUI = service;
+	DefaultMainWindow wnd(server, port, autoConnect, autoCall, noUI, 1280, 720);
 
 	if (!wnd.Create())
 	{
@@ -395,9 +395,14 @@ int WINAPI wWinMain(
 			{
 				port = root.get("port", FLAG_port).asInt();
 			}
+
+			if (root.isMember("service"))
+			{
+				g_service = root.get("service", false).asBool();
+			}
 		}
 	}
 
-	return InitWebRTC(server, port);
+	return InitWebRTC(server, port, g_service);
 #endif // TEST_RUNNER
 }

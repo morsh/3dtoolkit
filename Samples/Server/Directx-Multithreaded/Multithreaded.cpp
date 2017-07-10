@@ -377,9 +377,8 @@ SceneParamsStatic           g_StaticParamsMirror[g_iNumMirrors];
 VideoTestRunner*			g_videoTestRunner = nullptr;
 #else
 VideoHelper*				g_videoHelper = nullptr;
+bool						g_service = false;
 #endif // TEST_RUNNER
-
-
 
 //--------------------------------------------------------------------------------------
 // Forward declarations 
@@ -533,17 +532,16 @@ void InputUpdate(const std::string& message)
 //--------------------------------------------------------------------------------------
 // WebRTC
 //--------------------------------------------------------------------------------------
-int InitWebRTC(char* server, int port)
+int InitWebRTC(char* server, int port, bool service)
 {
 	rtc::EnsureWinsockInit();
 	rtc::Win32Thread w32_thread;
 	rtc::ThreadManager::Instance()->SetCurrentThread(&w32_thread);
 
-#ifdef NO_UI
-	DefaultMainWindow wnd(server, port, true, true, true);
-#else // NO_UI
-	DefaultMainWindow wnd(server, port, FLAG_autoconnect, FLAG_autocall, false, 1280, 720);
-#endif // NO_UI
+	bool autoConnect = service ? true : FLAG_autoconnect;
+	bool autoCall = service ? true : FLAG_autocall;
+	bool noUI = service;
+	DefaultMainWindow wnd(server, port, autoConnect, autoCall, noUI, 1280, 720);
 
 	if (!wnd.Create())
 	{
@@ -558,9 +556,10 @@ int InitWebRTC(char* server, int port)
 		DEFAULT_FRAME_BUFFER_WIDTH,
 		DEFAULT_FRAME_BUFFER_HEIGHT);
 
-#ifdef NO_UI
-	ShowWindow(wnd.handle(), SW_HIDE);
-#endif // NO_UI
+	if (g_service)
+	{
+		ShowWindow(wnd.handle(), SW_HIDE);
+	}
 
 	// Creates and initializes the video helper library.
 	g_videoHelper = new VideoHelper(
@@ -674,10 +673,15 @@ int WINAPI wWinMain( _In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 			{
 				port = root.get("port", FLAG_port).asInt();
 			}
+
+			if (root.isMember("service"))
+			{
+				g_service = root.get("service", false).asBool();
+			}
 		}
 	}
 
-	return InitWebRTC(server, port);
+	return InitWebRTC(server, port, g_service);
 #endif // TEST_RUNNER
 }
 
