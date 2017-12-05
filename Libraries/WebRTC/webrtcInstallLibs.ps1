@@ -29,6 +29,11 @@ function DecompressZip {
 
 
     if((Test-Path ($localFullPath)) -eq $false) {
+<<<<<<< HEAD
+        Write-Host ("Downloading " + $filename + " lib archive")
+=======
+        Write-Host "Downloading $localFileName from $uri"
+>>>>>>> master
         Copy-File -SourcePath $uri -DestinationPath $localFullPath    
         Write-Host ("Downloaded " + $filename + " lib archive")
 
@@ -139,6 +144,6 @@ Test-Nano()
 }
 
 
-DecompressZip -filename "m58patch_headers"
-DecompressZip -filename "m58patch_x64"
-DecompressZip -filename "m58patch_Win32"
+DecompressZip -filename "m58patch_cuda_headers"
+DecompressZip -filename "m58patch_cuda_x64"
+DecompressZip -filename "m58patch_cuda_Win32"

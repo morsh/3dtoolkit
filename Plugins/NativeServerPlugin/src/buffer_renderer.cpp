@@ -2,8 +2,8 @@
 
 #include "pch.h"
 #include "buffer_renderer.h"
-#include "webrtc/modules/video_coding/codecs/h264/include/nvFileIO.h"
-#include "webrtc/modules/video_coding/codecs/h264/include/nvUtils.h"
+#include "third_party/nvencode/inc/nvFileIO.h"
+#include "third_party/nvencode/inc/nvUtils.h"
 
 using namespace StreamingToolkit;
 using namespace Microsoft::WRL;
@@ -73,6 +73,18 @@ BufferRenderer::BufferRenderer(
 	d3d_device_->CreateTexture2D(&staging_frame_buffer_desc_, nullptr, &staging_frame_buffer_);
 }
 
+StreamingToolkit::BufferRenderer::BufferRenderer(int width, int height, const std::function<unsigned char*()>& get_frame_buffer, const std::function<void(int)>& set_target_frame_rate_func):
+	width_(width),
+	height_(height),
+	get_frame_buffer_(get_frame_buffer),
+	set_target_frame_rate_func_(set_target_frame_rate_func),
+	frame_buffer_(nullptr),
+	staging_frame_buffer_(nullptr),
+	d3d_device_(nullptr)
+{
+	frame_buffer_gl = new byte[width * height * 4];
+}
+
 // Destructor for BufferRenderer.
 BufferRenderer::~BufferRenderer()
 {
@@ -108,7 +120,7 @@ ID3D11Texture2D* BufferRenderer::Capture(int* width, int* height)
 {
 	auto lock = buffer_lock_.Lock();
 
-	if (!frame_buffer_)
+	if (!frame_buffer_ && !frame_buffer_gl)
 	{
 		return nullptr;
 	}
@@ -129,24 +141,34 @@ void BufferRenderer::Capture(void** buffer, int* size, int* width, int* height)
 {
 	auto lock = buffer_lock_.Lock();
 
-	if (!frame_buffer_ || !staging_frame_buffer_)
+	if ((!frame_buffer_ || !staging_frame_buffer_) && !frame_buffer_gl)
 	{
 		return;
 	}
 
-	// Updates the staging buffer before capturing.
-	UpdateStagingBuffer();
-
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	if (SUCCEEDED(d3d_context_.Get()->Map(staging_frame_buffer_.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+	if (frame_buffer_ || staging_frame_buffer_)
 	{
-		*buffer = mapped.pData;
-		*size = mapped.RowPitch * staging_frame_buffer_desc_.Height;
-		*width = staging_frame_buffer_desc_.Width;
-		*height = staging_frame_buffer_desc_.Height;
-	}
+		// Updates the staging buffer before capturing.
+		UpdateStagingBuffer();
 
-	d3d_context_->Unmap(staging_frame_buffer_.Get(), 0);
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		if (SUCCEEDED(d3d_context_.Get()->Map(staging_frame_buffer_.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+		{
+			*buffer = mapped.pData;
+			*size = mapped.RowPitch * staging_frame_buffer_desc_.Height;
+			*width = staging_frame_buffer_desc_.Width;
+			*height = staging_frame_buffer_desc_.Height;
+		}
+
+		d3d_context_->Unmap(staging_frame_buffer_.Get(), 0);
+	}
+	else
+	{
+		*buffer = get_frame_buffer_();
+		*size = width_ * height_ * 4;
+		*width = width_;
+		*height = height_;
+	}
 }
 
 void BufferRenderer::UpdateStagingBuffer()
@@ -201,4 +223,18 @@ void BufferRenderer::Resize(int width, int height)
 
 	// Creates the render target view.
 	d3d_device_->CreateRenderTargetView(frame_buffer_.Get(), nullptr, &d3d_render_target_view_);
+}
+
+bool StreamingToolkit::BufferRenderer::IsD3DEnabled()
+{
+	return d3d_device_ != nullptr;
+}
+
+void StreamingToolkit::BufferRenderer::SetTargetFrameRate(int targetFrameRate)
+{
+	target_frame_rate_ = targetFrameRate;
+	if (!IsD3DEnabled())
+	{
+		set_target_frame_rate_func_(target_frame_rate_);
+	}
 }

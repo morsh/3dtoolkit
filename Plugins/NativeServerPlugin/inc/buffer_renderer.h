@@ -6,8 +6,8 @@
 #include <functional>
 
 #include "plugindefs.h"
-#include "webrtc/modules/video_coding/codecs/h264/include/nvEncodeAPI.h"
-#include "webrtc/modules/video_coding/codecs/h264/include/nvCPUOPSys.h"
+#include "third_party/nvencode/inc/nvEncodeAPI.h"
+#include "third_party/nvencode/inc/nvCPUOPSys.h"
 
 #include "webrtc/modules/video_coding/codecs/h264/h264_encoder_impl.h"
 
@@ -23,6 +23,10 @@ namespace StreamingToolkit
 			const std::function<void()>& frame_render_func,
 			ID3D11Texture2D* frame_buffer = nullptr);
 
+		BufferRenderer(int width, int height,
+			const std::function<unsigned char*()>& get_frame_buffer,
+			const std::function<void(int)>& set_target_frame_rate_func);
+
 		~BufferRenderer();
 	
 		void GetDimension(int* width, int* height);
@@ -33,6 +37,8 @@ namespace StreamingToolkit
 		void Release();
 		void Resize(ID3D11Texture2D* frame_buffer);
 		void Resize(int width, int height);
+		bool IsD3DEnabled();
+		void SetTargetFrameRate(int targetFrameRate);
 
 	private:
 		void UpdateStagingBuffer();
@@ -40,11 +46,15 @@ namespace StreamingToolkit
 		Microsoft::WRL::Wrappers::CriticalSection buffer_lock_;
 		int width_;
 		int height_;
+		int target_frame_rate_;
 		std::function<void()> frame_render_func_;
+		std::function<void(int)> set_target_frame_rate_func_;
+		std::function<unsigned char*()> get_frame_buffer_;
 		D3D11_TEXTURE2D_DESC staging_frame_buffer_desc_;
 		Microsoft::WRL::ComPtr<ID3D11Device> d3d_device_;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3d_context_;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> frame_buffer_;
+		byte* frame_buffer_gl;
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_frame_buffer_;
 		Microsoft::WRL::ComPtr<ID3D11RenderTargetView> d3d_render_target_view_;
 	};
