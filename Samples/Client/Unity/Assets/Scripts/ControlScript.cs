@@ -1,18 +1,14 @@
-﻿using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Collections.Concurrent;
+﻿using Microsoft.Toolkit.ThreeD;
+using System;
 using System.Linq;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.UI;
-using Microsoft.Toolkit.ThreeD;
 
 #if !UNITY_EDITOR
 using Org.WebRtc;
 using WebRtcWrapper;
 using PeerConnectionClient.Signalling;
-using Windows.Media.Playback;
 using Windows.Media.Core;
 #endif
 
@@ -40,21 +36,24 @@ public class ControlScript : MonoBehaviour
 	public HolographicStatus HoloStatus;
 
 #if !UNITY_EDITOR
-    private Matrix4x4 leftViewProjection;
-    private Matrix4x4 rightViewProjection;
+    private Matrix4x4 leftProjection;
+    private Matrix4x4 leftView;
+    private Matrix4x4 rightProjection;
+    private Matrix4x4 rightView;
     private string cameraTransformMsg;
     private WebRtcControl _webRtcControl;
     
     private bool enabledStereo = false;
+    private long timestamp = 0;
 #endif
 
-	#region Graphics Low-Level Plugin DLL Setup
+    #region Graphics Low-Level Plugin DLL Setup
 #if !UNITY_EDITOR
     private MediaVideoTrack _peerVideoTrack;
 #endif
-	#endregion
+    #endregion
 
-	void Awake()
+    void Awake()
     {
     }
     
@@ -202,33 +201,39 @@ public class ControlScript : MonoBehaviour
     void Update()
     {
 #if !UNITY_EDITOR
-        leftViewProjection = LeftCamera.cullingMatrix;
-        rightViewProjection = RightCamera.cullingMatrix;
+        leftProjection = LeftCamera.projectionMatrix;
+        leftView = LeftCamera.worldToCameraMatrix;
+        rightProjection = RightCamera.projectionMatrix;
+        rightView = RightCamera.worldToCameraMatrix;
 
         // Builds the camera transform message.
-        var leftCameraTransform = "";
-        var rightCameraTransform = "";
+        var leftProjectionCameraTransform = "";
+        var leftViewCameraTransform = "";
+        var rightProjectionCameraTransform = "";
+        var rightViewCameraTransform = "";
         for (int i = 0; i < 4; i++)
         {
             for (int j = 0; j < 4; j++)
             {
-                leftCameraTransform += leftViewProjection[i, j] + ",";
-                rightCameraTransform += rightViewProjection[i, j];
-                if (i != 3 || j != 3)
-                {
-                    rightCameraTransform += ",";
-                }
+                leftProjectionCameraTransform += leftProjection[i, j] + ",";
+                leftViewCameraTransform += leftView[i, j] + ",";
+                rightProjectionCameraTransform += rightProjection[i, j] + ",";
+                rightViewCameraTransform += rightView[i, j] + ",";
             }
         }
 
-        var cameraTransformBody = leftCameraTransform + rightCameraTransform;
-        cameraTransformMsg =
+        var cameraTransformBody = leftProjectionCameraTransform + leftViewCameraTransform + rightProjectionCameraTransform + rightViewCameraTransform;
+
+        // Adds dummy prediction timestamp.
+        cameraTransformBody += timestamp++;
+
+        cameraTransformBody =
            "{" +
-           "  \"type\":\"camera-transform-stereo\"," +
+           "  \"type\":\"camera-transform-stereo-prediction\"," +
            "  \"body\":\"" + cameraTransformBody + "\"" +
            "}";
 
-        _webRtcControl.SendPeerDataChannelMessage(cameraTransformMsg);
+        _webRtcControl.SendPeerDataChannelMessage(cameraTransformBody);
         
         if (!enabledStereo && _peerVideoTrack != null)
         {
@@ -241,7 +246,12 @@ public class ControlScript : MonoBehaviour
             if (_webRtcControl.SendPeerDataChannelMessage(msg))
             {
                 // Start the stream when the server is in stero mode to avoid corrupt frames at startup.
-                var source = Media.CreateMedia().CreateMediaStreamSource(_peerVideoTrack, FrameRate, "media");
+                var source = Media.CreateMedia().CreateMediaStreamSource(
+                    _peerVideoTrack,
+                    "media",
+                    TextureWidth,
+                    TextureHeight);
+
                 Plugin.LoadMediaStreamSource((MediaStreamSource)source);
                 Plugin.Play();
                 enabledStereo = true;

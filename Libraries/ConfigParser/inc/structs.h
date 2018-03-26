@@ -69,8 +69,8 @@ namespace StreamingToolkit
 	} TurnServer;
 
 	/*
-	* Stun server configuration
-	*/
+	 * Stun server configuration
+	 */
 	typedef struct
 	{
 		/* The stun server uri							*/
@@ -127,4 +127,13 @@ namespace StreamingToolkit
 		/* The authentication info						*/
 		Authentication	authentication;
 	} WebRTCConfig;
+
+	/*
+	 * Video encoder configuration
+	 */
+	typedef struct
+	{
+		/* Capture frame rate							*/
+		uint32_t		capture_fps;
+	} NvEncConfig;
 }

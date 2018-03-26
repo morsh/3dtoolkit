@@ -1,4 +1,6 @@
-﻿using System;
+﻿using SimpleJSON;
+using System;
+using System.Collections;
 using System.Linq;
 using UnityEngine;
 
@@ -13,6 +15,24 @@ namespace Microsoft.Toolkit.ThreeD
     /// </remarks>
     public class WebRTCServer : MonoBehaviour
     {
+        /// <summary>
+        /// The video frame width.
+        /// </summary>
+        public int VideoFrameWidth = 1280;
+
+        /// <summary>
+        /// The video frame height.
+        /// </summary>
+        public int VideoFrameHeight = 720;
+
+        /// <summary>
+        /// If this flag is set to true, the target texture of the camera is generated
+        /// automatically using <see cref="InitializeRenderTextures"/>. Otherwise, the
+        /// target texture must be created and assigned manually in Editor using 
+        /// <see cref="RenderTexture"/>
+        /// </summary>
+        public bool GenerateTargetTexture = true;
+
         /// <summary>
         /// The left eye camera
         /// </summary>
@@ -64,6 +84,16 @@ namespace Microsoft.Toolkit.ThreeD
         public StreamingUnityServerPlugin Plugin = null;
 
         /// <summary>
+        /// Render texture for the left camera.
+        /// </summary>
+        private RenderTexture leftRenderTexture;
+
+        /// <summary>
+        /// Render texture for the right camera.
+        /// </summary>
+        private RenderTexture rightRenderTexture;
+
+        /// <summary>
         /// The location to be placed at as determined by client control
         /// </summary>
         private Vector3 location = Vector3.zero;
@@ -81,12 +111,22 @@ namespace Microsoft.Toolkit.ThreeD
         /// <summary>
         /// The left stereo eye projection as determined by client control
         /// </summary>
-        private Matrix4x4 stereoLeftProjection = Matrix4x4.identity;
+        private Matrix4x4 stereoLeftProjectionMatrix = Matrix4x4.identity;
+
+        /// <summary>
+        /// The left stereo eye view as determined by client control
+        /// </summary>
+        private Matrix4x4 stereoLeftViewMatrix = Matrix4x4.identity;
 
         /// <summary>
         /// The right stereo eye projection as determined by client control
         /// </summary>
-        private Matrix4x4 stereoRightProjection = Matrix4x4.identity;
+        private Matrix4x4 stereoRightProjectionMatrix = Matrix4x4.identity;
+
+        /// <summary>
+        /// The right stereo eye view as determined by client control
+        /// </summary>
+        private Matrix4x4 stereoRightViewMatrix = Matrix4x4.identity;
 
         /// <summary>
         /// Internal flag used to indicate we are shutting down
@@ -117,18 +157,50 @@ namespace Microsoft.Toolkit.ThreeD
         private bool? lastSetupVisibleEyes = null;
 
         /// <summary>
+        /// The last prediction timestamp.
+        /// </summary>
+        private long lastTimestamp = -1;
+
+        /// <summary>
+        /// Flag indicating if the camera needs to be updated.
+        /// </summary>
+        private bool cameraNeedUpdated = false;
+
+        /// <summary>
         /// Unity engine object Awake() hook
         /// </summary>
         private void Awake()
         {
-            // make sure that the render window continues to render when the game window does not have focus
+            // Make sure that the render window continues to render when the game window 
+            // does not have focus
             Application.runInBackground = true;
+            Application.targetFrameRate = 60;
 
-            // setup the eyes for the first time
+            // Initializes render textures if needed.
+            if (GenerateTargetTexture)
+            {
+                InitializeRenderTextures();
+            }
+
+            // Open the connection.
+            Open();
+
+            // Setup the eyes for the first time.
             SetupActiveEyes();
 
-            // open the connection
-            Open();
+            // Validates target texture of camera.
+            if (LeftEye.targetTexture == null || LeftEye.targetTexture.format != RenderTextureFormat.ARGB32 ||
+                RightEye.targetTexture == null || RightEye.targetTexture.format != RenderTextureFormat.ARGB32)
+            {
+                throw new ArgumentException("Invalid target texture of camera.");
+            }
+            else
+            {
+                // Initializes the buffer renderer using render texture.
+                StartCoroutine(Plugin.InitializeBufferCapturer(
+                    LeftEye.targetTexture.GetNativeTexturePtr(),
+                    RightEye.targetTexture.GetNativeTexturePtr()));
+            }
         }
 
         /// <summary>
@@ -147,16 +219,48 @@ namespace Microsoft.Toolkit.ThreeD
         {
             if (!isClosing)
             {
-                transform.position = location;
-                transform.LookAt(lookAt, up);
-
-                // apply stereo projection if needed
-                if (this.IsStereo &&
-                    !stereoLeftProjection.isIdentity &&
-                    !stereoRightProjection.isIdentity)
+                if (!IsStereo)
                 {
-                    this.LeftEye.SetStereoProjectionMatrix(Camera.StereoscopicEye.Left, stereoLeftProjection * this.LeftEye.worldToCameraMatrix);
-                    this.RightEye.SetStereoProjectionMatrix(Camera.StereoscopicEye.Right, stereoRightProjection * this.RightEye.worldToCameraMatrix);
+                    LeftEye.transform.position = location;
+                    LeftEye.transform.LookAt(lookAt, up);
+                    this.LeftEye.Render();
+                    StartCoroutine(SendFrame(false));
+                }
+                else if (cameraNeedUpdated)
+                {
+                    // Updates left and right projection matrices.
+                    this.LeftEye.projectionMatrix = stereoLeftProjectionMatrix;
+                    this.RightEye.projectionMatrix = stereoRightProjectionMatrix;
+
+                    // Updates camera transform's position and rotation.
+                    // Converts from right-handed to left-handed coordinates.
+                    stereoLeftViewMatrix = Matrix4x4.Inverse(stereoLeftViewMatrix);
+                    stereoRightViewMatrix = Matrix4x4.Inverse(stereoRightViewMatrix);
+
+                    this.LeftEye.transform.position = new Vector3(
+                        stereoLeftViewMatrix.m03,
+                        stereoLeftViewMatrix.m13,
+                        -stereoLeftViewMatrix.m23);
+
+                    this.RightEye.transform.position = new Vector3(
+                        stereoRightViewMatrix.m03,
+                        stereoRightViewMatrix.m13,
+                        -stereoRightViewMatrix.m23);
+
+                    Quaternion leftQ = QuaternionFromMatrix(stereoLeftViewMatrix);
+                    this.LeftEye.transform.rotation = new Quaternion(
+                        -leftQ.x, -leftQ.y, leftQ.z, leftQ.w);
+
+                    Quaternion rightQ = QuaternionFromMatrix(stereoRightViewMatrix);
+                    this.RightEye.transform.rotation = new Quaternion(
+                        -rightQ.x, -rightQ.y, rightQ.z, rightQ.w);
+
+                    // Manually render to textures.
+                    this.LeftEye.Render();
+                    this.RightEye.Render();
+
+                    // Starts sending frame.
+                    StartCoroutine(SendFrame(true));
                 }
             }
 
@@ -173,9 +277,6 @@ namespace Microsoft.Toolkit.ThreeD
                 return;
             }
 
-            // encode the entire render texture at the end of the frame
-            StartCoroutine(Plugin.EncodeAndTransmitFrame());
-            
             // if we got an offer, track that we're connected to them
             // in a way that won't trip our connection logic (we don't
             // want to accidently make them an offer, just an answer)
@@ -281,6 +382,26 @@ namespace Microsoft.Toolkit.ThreeD
         }
 
         /// <summary>
+        /// Initializes render textures.
+        /// </summary>
+        private void InitializeRenderTextures()
+        {
+            // Left.
+            leftRenderTexture = new RenderTexture(
+                VideoFrameWidth, VideoFrameHeight, 24, RenderTextureFormat.ARGB32);
+
+            leftRenderTexture.Create();
+            LeftEye.targetTexture = leftRenderTexture;
+
+            // Right
+            rightRenderTexture = new RenderTexture(
+                VideoFrameWidth, VideoFrameHeight, 24, RenderTextureFormat.ARGB32);
+
+            rightRenderTexture.Create();
+            RightEye.targetTexture = rightRenderTexture;
+        }
+
+        /// <summary>
         /// Handles input data and updates local transformations
         /// </summary>
         /// <param name="data">input data</param>
@@ -288,9 +409,10 @@ namespace Microsoft.Toolkit.ThreeD
         {
             try
             {
-                var node = SimpleJSON.JSON.Parse(data);
+                JSONNode node = SimpleJSON.JSON.Parse(data);
                 string messageType = node["type"];
-                
+                string camera = "";
+
                 switch (messageType)
                 {
                     case "stereo-rendering":
@@ -310,14 +432,14 @@ namespace Microsoft.Toolkit.ThreeD
                         break;
 
                     case "keyboard-event":
-                        var kbBody = node["body"];
+                        JSONNode kbBody = node["body"];
                         int kbMsg = kbBody["msg"];
                         int kbWParam = kbBody["wParam"];
 
                         break;
 
                     case "mouse-event":
-                        var mouseBody = node["body"];
+                        JSONNode mouseBody = node["body"];
                         int mouseMsg = mouseBody["msg"];
                         int mouseWParam = mouseBody["wParam"];
                         int mouseLParam = mouseBody["lParam"];
@@ -325,10 +447,10 @@ namespace Microsoft.Toolkit.ThreeD
                         break;
 
                     case "camera-transform-lookat":
-                        string cam = node["body"];
-                        if (cam != null && cam.Length > 0)
+                        camera = node["body"];
+                        if (camera != null && camera.Length > 0)
                         {
-                            string[] sp = cam.Split(new char[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                            string[] sp = camera.Split(new char[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
 
                             Vector3 loc = new Vector3();
                             loc.x = float.Parse(sp[0]);
@@ -352,24 +474,56 @@ namespace Microsoft.Toolkit.ThreeD
                         break;
 
                     case "camera-transform-stereo":
-
-                        string camera = node["body"];
-                        if (camera != null && camera.Length > 0)
+                        camera = node["body"];
+                        if (!cameraNeedUpdated && camera != null && camera.Length > 0)
                         {
-                            var coords = camera.Split(',');
-                            var index = 0;
+                            string[] coords = camera.Split(',');
+                            int index = 0;
                             for (int i = 0; i < 4; i++)
                             {
                                 for (int j = 0; j < 4; j++)
                                 {
-                                    // We are receiving 32 values for the left/right matrix.
-                                    // The first 16 are for left followed by the right matrix.
-                                    stereoRightProjection[i, j] = float.Parse(coords[16+index]);
-                                    stereoLeftProjection[i, j] = float.Parse(coords[index++]);
+                                    stereoRightViewMatrix[i, j] = float.Parse(coords[48 + index]);
+                                    stereoRightProjectionMatrix[i, j] = float.Parse(coords[32 + index]);
+                                    stereoLeftViewMatrix[i, j] = float.Parse(coords[16 + index]);
+                                    stereoLeftProjectionMatrix[i, j] = float.Parse(coords[index++]);
                                 }
                             }
+
+                            cameraNeedUpdated = true;
                         }
-                        
+
+                        break;
+
+                    case "camera-transform-stereo-prediction":
+                        camera = node["body"];
+                        if (!cameraNeedUpdated && camera != null && camera.Length > 0)
+                        {
+                            string[] coords = camera.Split(',');
+
+                            // Parse the prediction timestamp from the message body.
+                            long timestamp = long.Parse(coords[64]);
+
+                            if (timestamp != lastTimestamp)
+                            {
+                                lastTimestamp = timestamp;
+
+                                int index = 0;
+                                for (int i = 0; i < 4; i++)
+                                {
+                                    for (int j = 0; j < 4; j++)
+                                    {
+                                        stereoRightViewMatrix[i, j] = float.Parse(coords[48 + index]);
+                                        stereoRightProjectionMatrix[i, j] = float.Parse(coords[32 + index]);
+                                        stereoLeftViewMatrix[i, j] = float.Parse(coords[16 + index]);
+                                        stereoLeftProjectionMatrix[i, j] = float.Parse(coords[index++]);
+                                    }
+                                }
+
+                                cameraNeedUpdated = true;
+                            }
+                        }
+
                         break;
                 }
             }
@@ -380,24 +534,59 @@ namespace Microsoft.Toolkit.ThreeD
         }
 
         /// <summary>
-        /// Setup eye cameras based on number of eyes
+        /// Setup eye cameras based on number of eyes.
+        /// Cameras are disabled as we we take control of render order ourselves, see
+        /// https://docs.unity3d.com/ScriptReference/Camera.Render.html for more info
         /// </summary>
         private void SetupActiveEyes()
         {
             if (this.IsStereo)
             {
                 this.LeftEye.stereoTargetEye = StereoTargetEyeMask.Left;
-                this.RightEye.enabled = true;
+                this.LeftEye.enabled = false;
+                this.RightEye.enabled = false;
             }
             else
             {
                 // none means use the eye like a single camera, which is what we want here
                 this.LeftEye.stereoTargetEye = StereoTargetEyeMask.None;
+                this.LeftEye.enabled = false;
                 this.RightEye.enabled = false;
             }
 
             // update our last setup visible eye value
             this.lastSetupVisibleEyes = this.IsStereo;
+
+            // notify the plugin of the potential stereo change as well
+            if (this.Plugin != null)
+            {
+                this.Plugin.EncodingStereo = this.IsStereo;
+            }
+        }
+
+        /// <summary>
+        /// Sends frame buffer.
+        /// </summary>
+        private IEnumerator SendFrame(bool isStereo)
+        {
+            yield return Plugin.SendFrame(isStereo, lastTimestamp);
+            cameraNeedUpdated = false;
+        }
+
+        /// <summary>
+        /// From: https://answers.unity.com/questions/11363/converting-matrix4x4-to-quaternion-vector3.html
+        /// </summary>
+        public static Quaternion QuaternionFromMatrix(Matrix4x4 m)
+        {
+            Quaternion q = new Quaternion();
+            q.w = Mathf.Sqrt(Mathf.Max(0, 1 + m[0, 0] + m[1, 1] + m[2, 2])) / 2;
+            q.x = Mathf.Sqrt(Mathf.Max(0, 1 + m[0, 0] - m[1, 1] - m[2, 2])) / 2;
+            q.y = Mathf.Sqrt(Mathf.Max(0, 1 - m[0, 0] + m[1, 1] - m[2, 2])) / 2;
+            q.z = Mathf.Sqrt(Mathf.Max(0, 1 - m[0, 0] - m[1, 1] + m[2, 2])) / 2;
+            q.x *= Mathf.Sign(q.x * (m[2, 1] - m[1, 2]));
+            q.y *= Mathf.Sign(q.y * (m[0, 2] - m[2, 0]));
+            q.z *= Mathf.Sign(q.z * (m[1, 0] - m[0, 1]));
+            return q;
         }
     }
 }

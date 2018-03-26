@@ -6,6 +6,7 @@
 #include "DeviceResources.h"
 #include "DirectXHelper.h"
 
+using namespace D2D1;
 using namespace Microsoft::WRL;
 using namespace Platform;
 using namespace Windows::Foundation;
@@ -19,6 +20,39 @@ DX::DeviceResources::DeviceResources() :
 	m_holographicSpace(nullptr),
 	m_supportsVprt(false)
 {
+	CreateDeviceIndependentResources();
+}
+
+// Configures resources that don't depend on the Direct3D device.
+void DX::DeviceResources::CreateDeviceIndependentResources()
+{
+	// Initialize Direct2D resources.
+	D2D1_FACTORY_OPTIONS options;
+	ZeroMemory(&options, sizeof(D2D1_FACTORY_OPTIONS));
+
+#if defined(_DEBUG)
+	// If the project is in a debug build, enable Direct2D debugging via SDK Layers.
+	options.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
+#endif
+
+	// Initialize the Direct2D Factory.
+	DX::ThrowIfFailed(
+		D2D1CreateFactory(
+			D2D1_FACTORY_TYPE_SINGLE_THREADED,
+			__uuidof(ID2D1Factory3),
+			&options,
+			&m_d2dFactory
+		)
+	);
+
+	// Initialize the DirectWrite Factory.
+	DX::ThrowIfFailed(
+		DWriteCreateFactory(
+			DWRITE_FACTORY_TYPE_SHARED,
+			__uuidof(IDWriteFactory3),
+			&m_dwriteFactory
+		)
+	);
 }
 
 // Configures the Direct3D device, and stores handles to it and the device context.
@@ -64,11 +98,16 @@ void DX::DeviceResources::CreateDeviceResources()
 		dxgiAdapter.As(&m_dxgiAdapter)
 	);
 
-	// Enables multithread protection.
-	ID3D11Multithread* multithread;
-	m_d3dDevice->QueryInterface(IID_PPV_ARGS(&multithread));
-	multithread->SetMultithreadProtected(true);
-	multithread->Release();
+	DX::ThrowIfFailed(
+		m_d2dFactory->CreateDevice(dxgiDevice.Get(), &m_d2dDevice)
+	);
+
+	DX::ThrowIfFailed(
+		m_d2dDevice->CreateDeviceContext(
+			D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+			&m_d2dContext
+		)
+	);
 }
 
 void DX::DeviceResources::SetHolographicSpace(HolographicSpace^ holographicSpace)
@@ -200,24 +239,5 @@ void DX::DeviceResources::Present(HolographicFrame^ frame)
 	// Holographic apps should wait for the previous frame to finish before
 	// starting work on a new frame. This allows for better results from
 	// holographic frame predictions.
-	HolographicFramePresentResult presentResult = frame->PresentUsingCurrentPrediction();
-
-	HolographicFramePrediction^ prediction = frame->CurrentPrediction;
-	UseHolographicCameraResources<void>([this, prediction](std::map<UINT32, std::unique_ptr<CameraResources>>& cameraResourceMap)
-	{
-		for (auto cameraPose : prediction->CameraPoses)
-		{
-			// This represents the device-based resources for a HolographicCamera.
-			DX::CameraResources* pCameraResources = cameraResourceMap[cameraPose->HolographicCamera->Id].get();
-
-			// Discard the contents of the render target.
-			// This is a valid operation only when the existing contents will be
-			// entirely overwritten. If dirty or scroll rects are used, this call
-			// should be removed.
-			m_d3dContext->DiscardView(pCameraResources->GetBackBufferRenderTargetView());
-
-			// Discard the contents of the depth stencil.
-			m_d3dContext->DiscardView(pCameraResources->GetDepthStencilView());
-		}
-	});
+	HolographicFramePresentResult presentResult = frame->PresentUsingCurrentPrediction(HolographicFramePresentWaitBehavior::DoNotWaitForFrameToFinish);
 }
